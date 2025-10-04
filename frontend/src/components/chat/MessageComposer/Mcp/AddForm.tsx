@@ -58,6 +58,13 @@ export const McpAddForm = ({
   const [headersInput, setHeadersInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
 
+  // OAuth configuration fields
+  const [discoveryUrl, setDiscoveryUrl] = useState('');
+  const [allowedAudience, setAllowedAudience] = useState('');
+  const [tokenType, setTokenType] = useState<'id_token' | 'access_token'>(
+    'id_token'
+  );
+
   // Form validation function
   const isFormValid = () => {
     if (!serverName.trim()) return false;
@@ -79,6 +86,9 @@ export const McpAddForm = ({
     setServerCommand('');
     setHttpUrl('');
     setHeadersInput('');
+    setDiscoveryUrl('');
+    setAllowedAudience('');
+    setTokenType('id_token');
   };
 
   const addMcp = () => {
@@ -94,6 +104,17 @@ export const McpAddForm = ({
         setIsLoading(false);
         return;
       }
+    }
+
+    // Add OAuth configuration as headers metadata (for backend processing)
+    if (discoveryUrl && allowedAudience) {
+      if (!headersObj) {
+        headersObj = {};
+      }
+      // Store OAuth config in special headers for backend to process
+      headersObj['X-OAuth-Discovery-Url'] = discoveryUrl;
+      headersObj['X-OAuth-Allowed-Audience'] = allowedAudience;
+      headersObj['X-OAuth-Token-Type'] = tokenType;
     }
 
     if (serverType === 'stdio') {
@@ -276,6 +297,95 @@ export const McpAddForm = ({
             </>
           )}
         </div>
+
+        {/* OAuth Configuration Section */}
+        {(serverType === 'sse' || serverType === 'streamable-http') && (
+          <div className="flex flex-col gap-4 border-t border-border pt-4">
+            <div className="flex items-center gap-2">
+              <Label className="text-foreground font-semibold text-sm">
+                🔐 OAuth Configuration (Optional)
+              </Label>
+            </div>
+
+            <div className="flex flex-col gap-2">
+              <Label
+                htmlFor="discovery-url"
+                className="text-foreground/70 text-sm"
+              >
+                Discovery URL
+              </Label>
+              <Input
+                id="discovery-url"
+                placeholder="https://cognito-idp.us-east-1.amazonaws.com/.../.well-known/openid-configuration"
+                className="w-full bg-background text-foreground border-input font-mono text-xs"
+                value={discoveryUrl}
+                onChange={(e) => setDiscoveryUrl(e.target.value)}
+                disabled={isLoading}
+              />
+              <p className="text-xs text-muted-foreground">
+                OpenID Connect discovery endpoint for token validation
+              </p>
+            </div>
+
+            <div className="flex gap-2">
+              <div className="flex flex-col flex-grow gap-2">
+                <Label
+                  htmlFor="allowed-audience"
+                  className="text-foreground/70 text-sm"
+                >
+                  Allowed Audience
+                </Label>
+                <Input
+                  id="allowed-audience"
+                  placeholder="your_client_id_here"
+                  className="w-full bg-background text-foreground border-input"
+                  value={allowedAudience}
+                  onChange={(e) => setAllowedAudience(e.target.value)}
+                  disabled={isLoading}
+                />
+                <p className="text-xs text-muted-foreground">
+                  Expected audience (client ID) in the OAuth token
+                </p>
+              </div>
+
+              <div className="flex flex-col gap-2">
+                <Label
+                  htmlFor="token-type"
+                  className="text-foreground/70 text-sm"
+                >
+                  Token Type
+                </Label>
+                <Select
+                  value={tokenType}
+                  onValueChange={(value) =>
+                    setTokenType(value as 'id_token' | 'access_token')
+                  }
+                  disabled={isLoading}
+                >
+                  <SelectTrigger
+                    id="token-type"
+                    className="w-32 bg-background text-foreground border-input"
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="id_token">ID Token</SelectItem>
+                    <SelectItem value="access_token">Access Token</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+
+            {discoveryUrl && allowedAudience && (
+              <div className="bg-blue-500/10 border border-blue-500/20 rounded-md p-3">
+                <p className="text-xs text-blue-400">
+                  ✓ When configured, users must provide a valid OAuth token in
+                  the Authorization header when connecting to this server.
+                </p>
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       <div className="flex justify-end items-center gap-2 mt-auto">
