@@ -13,10 +13,18 @@ class StdioMcpConnection(BaseModel):
     clientType: Literal["stdio"] = "stdio"
 
 
+class OAuthConfig(BaseModel):
+    """OAuth configuration for MCP server authentication"""
+    discoveryUrl: str
+    allowedAudience: str
+    tokenType: Literal["id_token", "access_token"] = "id_token"
+
+
 class SseMcpConnection(BaseModel):
     name: str
     url: str
     headers: Optional[Dict[str, str]] = None
+    oauth_config: Optional[OAuthConfig] = None
     clientType: Literal["sse"] = "sse"
 
 
@@ -24,6 +32,7 @@ class HttpMcpConnection(BaseModel):
     name: str
     url: str
     headers: Optional[Dict[str, str]] = None
+    oauth_config: Optional[OAuthConfig] = None
     clientType: Literal["streamable-http"] = "streamable-http"
 
 

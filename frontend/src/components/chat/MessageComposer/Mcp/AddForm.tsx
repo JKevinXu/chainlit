@@ -379,8 +379,7 @@ export const McpAddForm = ({
             {discoveryUrl && allowedAudience && (
               <div className="bg-blue-500/10 border border-blue-500/20 rounded-md p-3">
                 <p className="text-xs text-blue-400">
-                  ✓ When configured, users must provide a valid OAuth token in
-                  the Authorization header when connecting to this server.
+                  ✓ OAuth configuration set. Token will be automatically generated from Cognito on connection.
                 </p>
               </div>
             )}

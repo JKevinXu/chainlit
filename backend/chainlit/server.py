@@ -1321,11 +1321,64 @@ async def connect_mcp(
                         detail="SSE MCP is not enabled",
                     )
 
+                # Extract OAuth configuration from headers if present
+                headers = getattr(payload, "headers", None) or {}
+                oauth_config = None
+                
+                if "X-OAuth-Discovery-Url" in headers and "X-OAuth-Allowed-Audience" in headers:
+                    from chainlit.mcp import OAuthConfig
+                    oauth_config = OAuthConfig(
+                        discoveryUrl=headers.pop("X-OAuth-Discovery-Url"),
+                        allowedAudience=headers.pop("X-OAuth-Allowed-Audience"),
+                        tokenType=headers.pop("X-OAuth-Token-Type", "id_token"),
+                    )
+                    print(f"🔐 OAuth configuration detected for {payload.name}")
+                    print(f"   Discovery URL: {oauth_config.discoveryUrl}")
+                    print(f"   Audience: {oauth_config.allowedAudience}")
+                    print(f"   Token Type: {oauth_config.tokenType}")
+
                 mcp_connection = SseMcpConnection(
                     url=payload.url,
                     name=payload.name,
-                    headers=getattr(payload, "headers", None),
+                    headers=headers if headers else None,
+                    oauth_config=oauth_config,
                 )
+                
+                # Handle OAuth authentication if configured
+                if oauth_config:
+                    from chainlit.oauth_utils import validate_oauth_token
+                    from chainlit.oauth_token_provider import TokenProvider
+                    
+                    token = None
+                    
+                    # Check if Authorization header is already provided
+                    if headers and "Authorization" in headers:
+                        auth_header = headers["Authorization"]
+                        if auth_header.startswith("Bearer "):
+                            token = auth_header.replace("Bearer ", "")
+                            print(f"🔑 Using provided token for {payload.name}")
+                    else:
+                        # No token in headers - obtain fresh token from Cognito
+                        token = TokenProvider.get_token(
+                            discovery_url=oauth_config.discoveryUrl,
+                            client_id=oauth_config.allowedAudience
+                        )
+                        
+                        if not token:
+                            print(f"⚠️  Could not obtain token automatically")
+                            raise HTTPException(
+                                status_code=401,
+                                detail=f"Failed to obtain OAuth token from Cognito. Ensure COGNITO_USERNAME and COGNITO_PASSWORD environment variables are set."
+                            )
+                        
+                        # Add the token to headers for the MCP connection
+                        if not headers:
+                            headers = {}
+                        headers["Authorization"] = f"Bearer {token}"
+                        mcp_connection.headers = headers
+                    
+                    # Skip validation - use token directly
+                    print(f"✅ Token obtained, using directly without validation")
 
                 transport = await exit_stack.enter_async_context(
                     sse_client(
@@ -1362,11 +1415,66 @@ async def connect_mcp(
                         status_code=400,
                         detail="HTTP MCP is not enabled",
                     )
+                
+                # Extract OAuth configuration from headers if present
+                headers = getattr(payload, "headers", None) or {}
+                oauth_config = None
+                
+                if "X-OAuth-Discovery-Url" in headers and "X-OAuth-Allowed-Audience" in headers:
+                    from chainlit.mcp import OAuthConfig
+                    oauth_config = OAuthConfig(
+                        discoveryUrl=headers.pop("X-OAuth-Discovery-Url"),
+                        allowedAudience=headers.pop("X-OAuth-Allowed-Audience"),
+                        tokenType=headers.pop("X-OAuth-Token-Type", "id_token"),
+                    )
+                    print(f"🔐 OAuth configuration detected for {payload.name}")
+                    print(f"   Discovery URL: {oauth_config.discoveryUrl}")
+                    print(f"   Audience: {oauth_config.allowedAudience}")
+                    print(f"   Token Type: {oauth_config.tokenType}")
+                
                 mcp_connection = HttpMcpConnection(
                     url=payload.url,
                     name=payload.name,
-                    headers=getattr(payload, "headers", None),
+                    headers=headers if headers else None,
+                    oauth_config=oauth_config,
                 )
+                
+                # Handle OAuth authentication if configured (same logic as SSE)
+                if oauth_config:
+                    from chainlit.oauth_utils import validate_oauth_token
+                    from chainlit.oauth_token_provider import TokenProvider
+                    
+                    token = None
+                    
+                    # Check if Authorization header is already provided
+                    if headers and "Authorization" in headers:
+                        auth_header = headers["Authorization"]
+                        if auth_header.startswith("Bearer "):
+                            token = auth_header.replace("Bearer ", "")
+                            print(f"🔑 Using provided token for {payload.name}")
+                    else:
+                        # No token in headers - obtain fresh token from Cognito
+                        token = TokenProvider.get_token(
+                            discovery_url=oauth_config.discoveryUrl,
+                            client_id=oauth_config.allowedAudience
+                        )
+                        
+                        if not token:
+                            print(f"⚠️  Could not obtain token automatically")
+                            raise HTTPException(
+                                status_code=401,
+                                detail=f"Failed to obtain OAuth token from Cognito. Ensure COGNITO_USERNAME and COGNITO_PASSWORD environment variables are set."
+                            )
+                        
+                        # Add the token to headers for the MCP connection
+                        if not headers:
+                            headers = {}
+                        headers["Authorization"] = f"Bearer {token}"
+                        mcp_connection.headers = headers
+                    
+                    # Skip validation - use token directly
+                    print(f"✅ Token obtained, using directly without validation")
+                
                 transport = await exit_stack.enter_async_context(
                     streamablehttp_client(
                         url=mcp_connection.url,
