@@ -64,6 +64,7 @@ export const McpAddForm = ({
   const [tokenType, setTokenType] = useState<'id_token' | 'access_token'>(
     'id_token'
   );
+  const [oauthToken, setOauthToken] = useState('');
 
   // Form validation function
   const isFormValid = () => {
@@ -89,9 +90,10 @@ export const McpAddForm = ({
     setDiscoveryUrl('');
     setAllowedAudience('');
     setTokenType('id_token');
+    setOauthToken('');
   };
 
-  const addMcp = () => {
+  const addMcp = async () => {
     setIsLoading(true);
 
     // Helper to parse the optional headers JSON
@@ -106,6 +108,82 @@ export const McpAddForm = ({
       }
     }
 
+    // If OAuth is configured and we don't have a token yet, trigger Hosted UI login
+    if (discoveryUrl && allowedAudience && !oauthToken) {
+      try {
+        toast.info('Opening Cognito login...');
+
+        // Get authorization URL from backend
+        const params = new URLSearchParams({
+          discovery_url: discoveryUrl,
+          client_id: allowedAudience,
+          redirect_uri: `${window.location.origin}/mcp/oauth/callback`
+        });
+
+        const response = await fetch(`/mcp/oauth/authorize?${params}`);
+        if (!response.ok) {
+          throw new Error('Failed to get authorization URL');
+        }
+
+        const { authorization_url } = await response.json();
+
+        // Open Cognito Hosted UI in popup
+        const popup = window.open(
+          authorization_url,
+          'Cognito Login',
+          'width=500,height=700,left=100,top=100'
+        );
+
+        if (!popup) {
+          toast.error('Popup blocked! Please allow popups for this site.');
+          setIsLoading(false);
+          return;
+        }
+
+        // Wait for OAuth token from popup
+        const token = await new Promise<string>((resolve, reject) => {
+          const messageHandler = (event: MessageEvent) => {
+            if (event.data.type === 'oauth_success') {
+              const tokens = event.data.tokens;
+              const token =
+                tokenType === 'id_token'
+                  ? tokens.id_token
+                  : tokens.access_token;
+              window.removeEventListener('message', messageHandler);
+              resolve(token);
+            } else if (event.data.type === 'oauth_error') {
+              window.removeEventListener('message', messageHandler);
+              reject(new Error(event.data.error || 'Authentication failed'));
+            }
+          };
+
+          window.addEventListener('message', messageHandler);
+
+          // Check if popup was closed without completing auth
+          const checkPopup = setInterval(() => {
+            if (popup.closed) {
+              clearInterval(checkPopup);
+              window.removeEventListener('message', messageHandler);
+              reject(new Error('Login window was closed'));
+            }
+          }, 1000);
+        });
+
+        setOauthToken(token);
+        toast.success('Authentication successful!');
+
+        // Immediately add the fresh token to headers (don't wait for state update)
+        if (!headersObj) {
+          headersObj = {};
+        }
+        headersObj['Authorization'] = `Bearer ${token}`;
+      } catch (error: any) {
+        toast.error(`Authentication failed: ${error.message}`);
+        setIsLoading(false);
+        return;
+      }
+    }
+
     // Add OAuth configuration as headers metadata (for backend processing)
     if (discoveryUrl && allowedAudience) {
       if (!headersObj) {
@@ -115,6 +193,8 @@ export const McpAddForm = ({
       headersObj['X-OAuth-Discovery-Url'] = discoveryUrl;
       headersObj['X-OAuth-Allowed-Audience'] = allowedAudience;
       headersObj['X-OAuth-Token-Type'] = tokenType;
+
+      // Note: If token was obtained from Hosted UI, it's already added above
     }
 
     if (serverType === 'stdio') {
@@ -379,7 +459,8 @@ export const McpAddForm = ({
             {discoveryUrl && allowedAudience && (
               <div className="bg-blue-500/10 border border-blue-500/20 rounded-md p-3">
                 <p className="text-xs text-blue-400">
-                  ✓ OAuth configuration set. Token will be automatically generated from Cognito on connection.
+                  ✓ OAuth configuration set. Token will be automatically
+                  generated from Cognito on connection.
                 </p>
               </div>
             )}

@@ -1580,6 +1580,150 @@ async def disconnect_mcp(
     return JSONResponse(content={"success": True})
 
 
+@router.get("/mcp/oauth/authorize")
+async def mcp_oauth_authorize(
+    discovery_url: str = Query(...),
+    client_id: str = Query(...),
+    redirect_uri: str = Query(default="http://localhost:8000/mcp/oauth/callback")
+):
+    """
+    Initiate OAuth Hosted UI flow for MCP authentication.
+    Returns the authorization URL for the user to visit.
+    """
+    from chainlit.oauth_hosted_ui import HostedUIProvider
+    
+    try:
+        auth_url, state = HostedUIProvider.get_authorization_url(
+            discovery_url=discovery_url,
+            client_id=client_id,
+            redirect_uri=redirect_uri
+        )
+        
+        return JSONResponse(content={
+            "authorization_url": auth_url,
+            "state": state
+        })
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Failed to generate authorization URL: {e!s}"
+        )
+
+
+@router.get("/mcp/oauth/callback")
+async def mcp_oauth_callback(
+    code: str = Query(...),
+    state: str = Query(...)
+):
+    """
+    Handle OAuth callback and exchange authorization code for tokens.
+    Cognito redirects here with 'code' and 'state' parameters.
+    We retrieve discovery_url and client_id from the stored state.
+    """
+    from chainlit.oauth_hosted_ui import HostedUIProvider
+    import os
+    
+    try:
+        # Retrieve stored auth state (includes discovery_url and client_id)
+        stored_state = HostedUIProvider._auth_states.get(state)
+        if not stored_state:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid or expired state parameter"
+            )
+        
+        discovery_url = stored_state.get('discovery_url')
+        client_id = stored_state.get('client_id')
+        
+        if not discovery_url or not client_id:
+            raise HTTPException(
+                status_code=400,
+                detail="Missing discovery_url or client_id in stored state"
+            )
+        
+        # Get optional client secret
+        client_secret = os.getenv("COGNITO_CLIENT_SECRET")
+        
+        # Exchange code for tokens
+        tokens = await HostedUIProvider.exchange_code_for_token(
+            discovery_url=discovery_url,
+            client_id=client_id,
+            authorization_code=code,
+            state=state,
+            client_secret=client_secret
+        )
+        
+        if not tokens:
+            raise HTTPException(
+                status_code=401,
+                detail="Failed to exchange authorization code for tokens"
+            )
+        
+        # Return HTML page that closes itself and sends token to parent window
+        html_content = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>OAuth Callback</title>
+            <style>
+                body {{
+                    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                    display: flex;
+                    justify-content: center;
+                    align-items: center;
+                    height: 100vh;
+                    margin: 0;
+                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                    color: white;
+                }}
+                .container {{
+                    text-align: center;
+                    padding: 2rem;
+                    background: rgba(255, 255, 255, 0.1);
+                    border-radius: 10px;
+                    backdrop-filter: blur(10px);
+                }}
+                .checkmark {{
+                    font-size: 48px;
+                    margin-bottom: 1rem;
+                }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="checkmark">✅</div>
+                <h1>Authentication Successful!</h1>
+                <p>You can close this window and return to the application.</p>
+            </div>
+            <script>
+                // Send tokens to parent window (if opened in popup)
+                if (window.opener) {{
+                    window.opener.postMessage({{
+                        type: 'oauth_success',
+                        tokens: {json.dumps(tokens)}
+                    }}, '*');
+                    window.close();
+                }} else {{
+                    // Store in sessionStorage for retrieval
+                    sessionStorage.setItem('mcp_oauth_tokens', JSON.stringify({json.dumps(tokens)}));
+                    setTimeout(() => {{
+                        window.location.href = '/';
+                    }}, 2000);
+                }}
+            </script>
+        </body>
+        </html>
+        """
+        
+        return HTMLResponse(content=html_content)
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"OAuth callback failed: {e!s}"
+        )
+
+
 @router.post("/project/file")
 async def upload_file(
     current_user: UserParam,
