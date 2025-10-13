@@ -410,21 +410,21 @@ export const McpAddForm = ({
             <div className="flex gap-2">
               <div className="flex flex-col flex-grow gap-2">
                 <Label
-                  htmlFor="allowed-audience"
+                  htmlFor="client-id"
                   className="text-foreground/70 text-sm"
                 >
-                  Allowed Audience
+                  Client ID
                 </Label>
                 <Input
-                  id="allowed-audience"
-                  placeholder="your_client_id_here"
+                  id="client-id"
+                  placeholder="1bh4e7309vaisuf8qvuhec6qn3"
                   className="w-full bg-background text-foreground border-input"
                   value={allowedAudience}
                   onChange={(e) => setAllowedAudience(e.target.value)}
                   disabled={isLoading}
                 />
                 <p className="text-xs text-muted-foreground">
-                  Expected audience (client ID) in the OAuth token
+                  OAuth application client ID (used for token validation)
                 </p>
               </div>
 
