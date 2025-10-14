@@ -1416,7 +1416,7 @@ async def connect_mcp(
                     oauth_config = OAuthConfig(
                         discoveryUrl=headers.pop("X-OAuth-Discovery-Url"),
                         allowedAudience=headers.pop("X-OAuth-Allowed-Audience"),
-                        tokenType=headers.pop("X-OAuth-Token-Type", "id_token"),
+                        tokenType=headers.pop("X-OAuth-Token-Type", "access_token"),
                     )
                     print(f"🔐 OAuth configuration detected for {payload.name}")
                     print(f"   Discovery URL: {oauth_config.discoveryUrl}")
@@ -1554,7 +1554,7 @@ async def connect_mcp(
                     oauth_config = OAuthConfig(
                         discoveryUrl=headers.pop("X-OAuth-Discovery-Url"),
                         allowedAudience=headers.pop("X-OAuth-Allowed-Audience"),
-                        tokenType=headers.pop("X-OAuth-Token-Type", "id_token"),
+                        tokenType=headers.pop("X-OAuth-Token-Type", "access_token"),
                     )
                     print(f"🔐 OAuth configuration detected for {payload.name}")
                     print(f"   Discovery URL: {oauth_config.discoveryUrl}")

@@ -62,7 +62,7 @@ export const McpAddForm = ({
   const [discoveryUrl, setDiscoveryUrl] = useState('');
   const [allowedAudience, setAllowedAudience] = useState('');
   const [tokenType, setTokenType] = useState<'id_token' | 'access_token'>(
-    'id_token'
+    'access_token'
   );
   const [oauthToken, setOauthToken] = useState('');
 
@@ -396,7 +396,7 @@ export const McpAddForm = ({
               </Label>
               <Input
                 id="discovery-url"
-                placeholder="https://cognito-idp.us-east-1.amazonaws.com/.../.well-known/openid-configuration"
+                placeholder="https://idp.federate.amazon.com/.well-known/openid-configuration"
                 className="w-full bg-background text-foreground border-input font-mono text-xs"
                 value={discoveryUrl}
                 onChange={(e) => setDiscoveryUrl(e.target.value)}

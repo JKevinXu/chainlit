@@ -17,7 +17,7 @@ class OAuthConfig(BaseModel):
     """OAuth configuration for MCP server authentication"""
     discoveryUrl: str
     allowedAudience: str
-    tokenType: Literal["id_token", "access_token"] = "id_token"
+    tokenType: Literal["id_token", "access_token"] = "access_token"
 
 
 class SseMcpConnection(BaseModel):
