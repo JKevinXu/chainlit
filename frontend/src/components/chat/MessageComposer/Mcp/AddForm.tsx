@@ -417,7 +417,7 @@ export const McpAddForm = ({
                 </Label>
                 <Input
                   id="client-id"
-                  placeholder="1bh4e7309vaisuf8qvuhec6qn3"
+                  placeholder="your-oauth-client-id"
                   className="w-full bg-background text-foreground border-input"
                   value={allowedAudience}
                   onChange={(e) => setAllowedAudience(e.target.value)}
