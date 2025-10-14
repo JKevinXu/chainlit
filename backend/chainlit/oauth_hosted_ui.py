@@ -51,7 +51,7 @@ class HostedUIProvider:
         discovery_url: str,
         client_id: str,
         redirect_uri: str,
-        scope: str = "openid email profile",
+        scope: str = "openid email profile offline_access",
     ) -> tuple[str, str]:
         """
         Generate the Cognito Hosted UI authorization URL.
@@ -235,6 +235,10 @@ class HostedUIProvider:
                     print(f"   ID token: {tokens['id_token'][:50]}...")
                 if "access_token" in tokens:
                     print(f"   Access token: {tokens['access_token'][:50]}...")
+                if "refresh_token" in tokens:
+                    print(f"   Refresh token: {tokens['refresh_token'][:50]}...")
+                else:
+                    print("   ⚠️ No refresh token returned")
 
                 return tokens
 
