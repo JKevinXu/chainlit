@@ -5,12 +5,85 @@ Provides browser-based login flow instead of username/password auth.
 
 import base64
 import hashlib
+import json
 import os
 import secrets
+import time
+from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 from urllib.parse import urlencode, urlparse
 
 import httpx
+
+
+@dataclass
+class TokenData:
+    """Stores OAuth tokens with expiry information"""
+
+    id_token: str
+    access_token: str
+    refresh_token: Optional[str] = None
+    id_token_expires_at: float = 0.0  # Unix timestamp
+    access_token_expires_at: float = 0.0  # Unix timestamp
+    refresh_token_expires_at: float = 0.0  # Unix timestamp
+    discovery_url: str = ""
+    client_id: str = ""
+    client_secret: Optional[str] = None
+    session_id: str = ""
+    last_refresh_at: float = field(default_factory=time.time)
+
+    def time_until_id_token_expiry(self) -> float:
+        """Returns seconds until ID token expires"""
+        return max(0.0, self.id_token_expires_at - time.time())
+
+    def time_until_access_token_expiry(self) -> float:
+        """Returns seconds until access token expires"""
+        return max(0.0, self.access_token_expires_at - time.time())
+
+    def needs_refresh(self, threshold_seconds: int = 3540) -> bool:
+        """
+        Check if token needs refresh.
+
+        Args:
+            threshold_seconds: Refresh when this many seconds before expiry (default: 3540 = 59 min for testing, 600 = 10 min for prod)
+
+        Returns:
+            True if token should be refreshed
+        """
+        time_until_expiry = self.time_until_id_token_expiry()
+        return 0 < time_until_expiry < threshold_seconds
+
+
+def decode_jwt_without_validation(token: str) -> Optional[Dict[str, Any]]:
+    """
+    Decode JWT token without signature validation (for extracting exp claim).
+
+    Args:
+        token: JWT token string
+
+    Returns:
+        Decoded payload dict or None if decode fails
+    """
+    try:
+        # JWT format: header.payload.signature
+        parts = token.split(".")
+        if len(parts) != 3:
+            return None
+
+        # Decode payload (add padding if needed)
+        payload_encoded = parts[1]
+        # Add padding for base64 decoding
+        padding = 4 - (len(payload_encoded) % 4)
+        if padding != 4:
+            payload_encoded += "=" * padding
+
+        payload_bytes = base64.urlsafe_b64decode(payload_encoded)
+        payload = json.loads(payload_bytes.decode("utf-8"))
+
+        return payload
+    except Exception as e:
+        print(f"⚠️  Failed to decode JWT: {e}")
+        return None
 
 
 class HostedUIProvider:
@@ -18,6 +91,9 @@ class HostedUIProvider:
 
     # Store state and code verifier for PKCE
     _auth_states: Dict[str, Dict[str, str]] = {}
+
+    # Token store for managing refresh
+    _token_store: Dict[str, TokenData] = {}
 
     @staticmethod
     def generate_pkce_pair() -> tuple[str, str]:
@@ -233,8 +309,10 @@ class HostedUIProvider:
                 print("✅ Successfully obtained tokens from Hosted UI")
                 if "id_token" in tokens:
                     print(f"   ID token: {tokens['id_token'][:50]}...")
+                    print(f"   📋 Full ID token: {tokens['id_token']}")
                 if "access_token" in tokens:
                     print(f"   Access token: {tokens['access_token'][:50]}...")
+                    print(f"   📋 Full access token: {tokens['access_token']}")
                 if "refresh_token" in tokens:
                     print(f"   Refresh token: {tokens['refresh_token'][:50]}...")
                 else:
@@ -269,3 +347,210 @@ class HostedUIProvider:
         )
 
         return auth_url
+
+    @classmethod
+    async def refresh_tokens(
+        cls,
+        discovery_url: str,
+        client_id: str,
+        refresh_token: str,
+        client_secret: Optional[str] = None,
+        scope: str = "openid email profile offline_access",
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Refresh OAuth tokens using a refresh token.
+
+        Args:
+            discovery_url: OIDC discovery URL
+            client_id: OAuth client ID
+            refresh_token: Refresh token from previous authentication
+            client_secret: Optional client secret for confidential clients
+            scope: OAuth scopes to request (including openid to get new ID token)
+
+        Returns:
+            New token response dict or None if refresh fails
+        """
+        try:
+            # Fetch the discovery document to get the token endpoint
+            async with httpx.AsyncClient() as client:
+                response = await client.get(discovery_url, timeout=10.0)
+                response.raise_for_status()
+                discovery_doc = response.json()
+
+                token_url = discovery_doc.get("token_endpoint")
+                if not token_url:
+                    raise ValueError("token_endpoint not found in discovery document")
+
+            # Prepare token refresh request
+            headers = {"Content-Type": "application/x-www-form-urlencoded"}
+
+            # Add client authentication if secret is provided
+            if client_secret:
+                auth_string = f"{client_id}:{client_secret}"
+                auth_b64 = base64.b64encode(auth_string.encode("utf-8")).decode("utf-8")
+                headers["Authorization"] = f"Basic {auth_b64}"
+
+            # Prepare request body with scope to request new ID token
+            body = {
+                "grant_type": "refresh_token",
+                "client_id": client_id,
+                "refresh_token": refresh_token,
+                "scope": scope,  # Include scope to potentially get new ID token
+            }
+
+            print("🔄 Refreshing OAuth tokens with scope: " + scope)
+
+            async with httpx.AsyncClient() as client:
+                response = await client.post(token_url, headers=headers, data=body)
+
+                if response.status_code != 200:
+                    print(f"❌ Token refresh failed: {response.status_code}")
+                    print(f"   Response: {response.text}")
+                    return None
+
+                tokens = response.json()
+
+                print("✅ Successfully refreshed tokens")
+                if "id_token" in tokens:
+                    print(f"   New ID token: {tokens['id_token'][:50]}... ✨ (NEW!)")
+                    print(f"   📋 Full ID token: {tokens['id_token']}")
+                else:
+                    print(f"   ⚠️  No new ID token returned (IDP may not support this)")
+                if "access_token" in tokens:
+                    print(f"   New access token: {tokens['access_token'][:50]}...")
+                    print(f"   📋 Full access token: {tokens['access_token']}")
+                    # Check if access token contains user identity
+                    access_payload = decode_jwt_without_validation(tokens['access_token'])
+                    if access_payload:
+                        identity_claims = {k: v for k, v in access_payload.items() if k in ['sub', 'email', 'name', 'username', 'preferred_username']}
+                        if identity_claims:
+                            print(f"   ✅ Access token contains user identity: {list(identity_claims.keys())}")
+                        else:
+                            print(f"   ℹ️  Access token claims: {list(access_payload.keys())[:5]}...")
+                if "refresh_token" in tokens:
+                    print(f"   New refresh token: {tokens['refresh_token'][:50]}...")
+
+                return tokens
+
+        except Exception as e:
+            print(f"❌ Error refreshing tokens: {e}")
+            return None
+
+    @classmethod
+    def store_tokens(
+        cls,
+        session_id: str,
+        tokens: Dict[str, Any],
+        discovery_url: str,
+        client_id: str,
+        client_secret: Optional[str] = None,
+    ) -> Optional[TokenData]:
+        """
+        Store tokens with expiry information for proactive refresh.
+
+        Args:
+            session_id: Unique session identifier
+            tokens: Token response from OAuth
+            discovery_url: OIDC discovery URL
+            client_id: OAuth client ID
+            client_secret: Optional client secret
+
+        Returns:
+            TokenData object or None if parsing fails
+        """
+        try:
+            # Get existing token data if this is a refresh
+            existing_token_data = cls._token_store.get(session_id)
+            
+            # Extract tokens from response, preserving existing ones if not returned
+            id_token = tokens.get("id_token") or (existing_token_data.id_token if existing_token_data else "")
+            access_token = tokens.get("access_token") or (existing_token_data.access_token if existing_token_data else "")
+            refresh_token = tokens.get("refresh_token") or (existing_token_data.refresh_token if existing_token_data else None)
+
+            # Parse expiry from tokens, preserving existing expiry if token unchanged
+            id_token_expires_at = existing_token_data.id_token_expires_at if existing_token_data else 0.0
+            access_token_expires_at = existing_token_data.access_token_expires_at if existing_token_data else 0.0
+
+            # Update ID token expiry if we have a new ID token
+            if tokens.get("id_token"):
+                id_payload = decode_jwt_without_validation(id_token)
+                if id_payload and "exp" in id_payload:
+                    id_token_expires_at = float(id_payload["exp"])
+                    print(
+                        f"📅 ID token expires at: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(id_token_expires_at))}"
+                    )
+            elif existing_token_data:
+                print(f"♻️  Preserving existing ID token (expires at: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(id_token_expires_at))})")
+                print(f"   📋 Preserved ID token: {id_token}")
+
+            # Update access token expiry if we have a new access token
+            if tokens.get("access_token"):
+                access_payload = decode_jwt_without_validation(access_token)
+                if access_payload and "exp" in access_payload:
+                    access_token_expires_at = float(access_payload["exp"])
+                    print(
+                        f"📅 Access token expires at: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(access_token_expires_at))}"
+                    )
+
+            # Create TokenData
+            token_data = TokenData(
+                id_token=id_token,
+                access_token=access_token,
+                refresh_token=refresh_token,
+                id_token_expires_at=id_token_expires_at,
+                access_token_expires_at=access_token_expires_at,
+                discovery_url=discovery_url,
+                client_id=client_id,
+                client_secret=client_secret,
+                session_id=session_id,
+            )
+
+            # Store in token store
+            cls._token_store[session_id] = token_data
+
+            # Log refresh status
+            time_until_expiry = token_data.time_until_id_token_expiry()
+            print(
+                f"💾 Stored tokens for session: {session_id} (ID token expires in {time_until_expiry / 60:.1f} minutes)"
+            )
+
+            return token_data
+
+        except Exception as e:
+            print(f"❌ Error storing tokens: {e}")
+            return None
+
+    @classmethod
+    def get_stored_tokens(cls, session_id: str) -> Optional[TokenData]:
+        """
+        Retrieve stored tokens for a session.
+
+        Args:
+            session_id: Unique session identifier
+
+        Returns:
+            TokenData object or None if not found
+        """
+        return cls._token_store.get(session_id)
+
+    @classmethod
+    def remove_stored_tokens(cls, session_id: str) -> None:
+        """
+        Remove stored tokens for a session.
+
+        Args:
+            session_id: Unique session identifier
+        """
+        if session_id in cls._token_store:
+            del cls._token_store[session_id]
+            print(f"🗑️  Removed tokens for session: {session_id}")
+
+    @classmethod
+    def get_all_sessions(cls) -> Dict[str, TokenData]:
+        """
+        Get all stored token sessions.
+
+        Returns:
+            Dictionary of session_id to TokenData
+        """
+        return cls._token_store.copy()

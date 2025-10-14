@@ -158,6 +158,83 @@ async def lifespan(app: FastAPI):
 
         slack_task = asyncio.create_task(start_socket_mode())
 
+    # Token refresh monitor task
+    refresh_task = None
+    refresh_stop_event = asyncio.Event()
+
+    async def token_refresh_monitor():
+        """Background task to proactively refresh OAuth tokens before expiry."""
+        from chainlit.oauth_hosted_ui import HostedUIProvider
+
+        logger.info("🔄 Token refresh monitor started")
+
+        while not refresh_stop_event.is_set():
+            try:
+                # Check every 10 seconds (testing mode - use 60 for production)
+                await asyncio.sleep(10)
+
+                # Get all active sessions
+                sessions = HostedUIProvider.get_all_sessions()
+
+                for session_id, token_data in sessions.items():
+                    # Check if token needs refresh (default: 10 min before expiry)
+                    if token_data.needs_refresh():
+                        time_until_expiry = token_data.time_until_id_token_expiry()
+                        logger.info(
+                            f"⏰ Token for session {session_id} needs refresh "
+                            f"(expires in {time_until_expiry / 60:.1f} minutes)"
+                        )
+
+                        # Only refresh if we have a refresh token
+                        if not token_data.refresh_token:
+                            logger.warning(
+                                f"⚠️  No refresh token available for session {session_id}"
+                            )
+                            continue
+
+                        # Perform token refresh
+                        new_tokens = await HostedUIProvider.refresh_tokens(
+                            discovery_url=token_data.discovery_url,
+                            client_id=token_data.client_id,
+                            refresh_token=token_data.refresh_token,
+                            client_secret=token_data.client_secret,
+                        )
+
+                        if new_tokens:
+                            # Update stored tokens with new values
+                            updated_token_data = HostedUIProvider.store_tokens(
+                                session_id=session_id,
+                                tokens=new_tokens,
+                                discovery_url=token_data.discovery_url,
+                                client_id=token_data.client_id,
+                                client_secret=token_data.client_secret,
+                            )
+
+                            if updated_token_data:
+                                logger.info(
+                                    f"✅ Successfully refreshed tokens for session {session_id}"
+                                )
+                                # TODO: Update active MCP connections with new tokens
+                            else:
+                                logger.error(
+                                    f"❌ Failed to store refreshed tokens for session {session_id}"
+                                )
+                        else:
+                            logger.error(
+                                f"❌ Failed to refresh tokens for session {session_id}"
+                            )
+                            # Consider removing the session or notifying user to re-authenticate
+
+            except asyncio.CancelledError:
+                logger.info("🛑 Token refresh monitor stopped")
+                break
+            except Exception as e:
+                logger.error(f"❌ Error in token refresh monitor: {e}")
+                # Continue monitoring despite errors
+                await asyncio.sleep(60)
+
+    refresh_task = asyncio.create_task(token_refresh_monitor())
+
     try:
         yield
     finally:
@@ -177,6 +254,11 @@ async def lifespan(app: FastAPI):
             if slack_task:
                 slack_task.cancel()
                 await slack_task
+
+            if refresh_task:
+                refresh_stop_event.set()
+                refresh_task.cancel()
+                await refresh_task
 
             if data_layer := get_data_layer():
                 await data_layer.close()
@@ -1324,9 +1406,13 @@ async def connect_mcp(
                 # Extract OAuth configuration from headers if present
                 headers = getattr(payload, "headers", None) or {}
                 oauth_config = None
-                
-                if "X-OAuth-Discovery-Url" in headers and "X-OAuth-Allowed-Audience" in headers:
+
+                if (
+                    "X-OAuth-Discovery-Url" in headers
+                    and "X-OAuth-Allowed-Audience" in headers
+                ):
                     from chainlit.mcp import OAuthConfig
+
                     oauth_config = OAuthConfig(
                         discoveryUrl=headers.pop("X-OAuth-Discovery-Url"),
                         allowedAudience=headers.pop("X-OAuth-Allowed-Audience"),
@@ -1343,14 +1429,14 @@ async def connect_mcp(
                     headers=headers if headers else None,
                     oauth_config=oauth_config,
                 )
-                
+
                 # Handle OAuth authentication if configured
                 if oauth_config:
-                    from chainlit.oauth_utils import validate_oauth_token
+                    from chainlit.oauth_hosted_ui import HostedUIProvider
                     from chainlit.oauth_token_provider import TokenProvider
-                    
+
                     token = None
-                    
+
                     # Check if Authorization header is already provided
                     if headers and "Authorization" in headers:
                         auth_header = headers["Authorization"]
@@ -1358,27 +1444,66 @@ async def connect_mcp(
                             token = auth_header.replace("Bearer ", "")
                             print(f"🔑 Using provided token for {payload.name}")
                     else:
-                        # No token in headers - obtain fresh token from Cognito
-                        token = TokenProvider.get_token(
-                            discovery_url=oauth_config.discoveryUrl,
-                            client_id=oauth_config.allowedAudience
-                        )
-                        
+                        # Check token store for refreshed tokens first
+                        stored_token_data = None
+                        for (
+                            session_id,
+                            token_data,
+                        ) in HostedUIProvider.get_all_sessions().items():
+                            # Match by discovery URL and client ID
+                            if (
+                                token_data.discovery_url == oauth_config.discoveryUrl
+                                and token_data.client_id == oauth_config.allowedAudience
+                            ):
+                                stored_token_data = token_data
+                                print(
+                                    f"🔄 Found stored tokens for {payload.name} (session: {session_id})"
+                                )
+                                break
+
+                        if stored_token_data:
+                            # Use stored token based on token type
+                            if oauth_config.tokenType == "id_token":
+                                token = stored_token_data.id_token
+                                time_until_expiry = (
+                                    stored_token_data.time_until_id_token_expiry()
+                                )
+                                print(
+                                    f"✅ Using stored ID token (expires in {time_until_expiry / 60:.1f} min)"
+                                )
+                            else:
+                                token = stored_token_data.access_token
+                                time_until_expiry = (
+                                    stored_token_data.time_until_access_token_expiry()
+                                )
+                                print(
+                                    f"✅ Using stored access token (expires in {time_until_expiry / 60:.1f} min)"
+                                )
+                        else:
+                            # No stored token - obtain fresh token from Cognito
+                            print(
+                                "⚠️  No stored tokens found, obtaining fresh token from Cognito"
+                            )
+                            token = TokenProvider.get_token(
+                                discovery_url=oauth_config.discoveryUrl,
+                                client_id=oauth_config.allowedAudience,
+                            )
+
                         if not token:
-                            print(f"⚠️  Could not obtain token automatically")
+                            print("⚠️  Could not obtain token automatically")
                             raise HTTPException(
                                 status_code=401,
-                                detail=f"Failed to obtain OAuth token from Cognito. Ensure COGNITO_USERNAME and COGNITO_PASSWORD environment variables are set."
+                                detail="Failed to obtain OAuth token from Cognito. Ensure COGNITO_USERNAME and COGNITO_PASSWORD environment variables are set.",
                             )
-                        
+
                         # Add the token to headers for the MCP connection
                         if not headers:
                             headers = {}
                         headers["Authorization"] = f"Bearer {token}"
                         mcp_connection.headers = headers
-                    
+
                     # Skip validation - use token directly
-                    print(f"✅ Token obtained, using directly without validation")
+                    print("✅ Token obtained, using directly without validation")
 
                 transport = await exit_stack.enter_async_context(
                     sse_client(
@@ -1415,13 +1540,17 @@ async def connect_mcp(
                         status_code=400,
                         detail="HTTP MCP is not enabled",
                     )
-                
+
                 # Extract OAuth configuration from headers if present
                 headers = getattr(payload, "headers", None) or {}
                 oauth_config = None
-                
-                if "X-OAuth-Discovery-Url" in headers and "X-OAuth-Allowed-Audience" in headers:
+
+                if (
+                    "X-OAuth-Discovery-Url" in headers
+                    and "X-OAuth-Allowed-Audience" in headers
+                ):
                     from chainlit.mcp import OAuthConfig
+
                     oauth_config = OAuthConfig(
                         discoveryUrl=headers.pop("X-OAuth-Discovery-Url"),
                         allowedAudience=headers.pop("X-OAuth-Allowed-Audience"),
@@ -1431,21 +1560,21 @@ async def connect_mcp(
                     print(f"   Discovery URL: {oauth_config.discoveryUrl}")
                     print(f"   Audience: {oauth_config.allowedAudience}")
                     print(f"   Token Type: {oauth_config.tokenType}")
-                
+
                 mcp_connection = HttpMcpConnection(
                     url=payload.url,
                     name=payload.name,
                     headers=headers if headers else None,
                     oauth_config=oauth_config,
                 )
-                
+
                 # Handle OAuth authentication if configured (same logic as SSE)
                 if oauth_config:
-                    from chainlit.oauth_utils import validate_oauth_token
+                    from chainlit.oauth_hosted_ui import HostedUIProvider
                     from chainlit.oauth_token_provider import TokenProvider
-                    
+
                     token = None
-                    
+
                     # Check if Authorization header is already provided
                     if headers and "Authorization" in headers:
                         auth_header = headers["Authorization"]
@@ -1453,28 +1582,67 @@ async def connect_mcp(
                             token = auth_header.replace("Bearer ", "")
                             print(f"🔑 Using provided token for {payload.name}")
                     else:
-                        # No token in headers - obtain fresh token from Cognito
-                        token = TokenProvider.get_token(
-                            discovery_url=oauth_config.discoveryUrl,
-                            client_id=oauth_config.allowedAudience
-                        )
-                        
+                        # Check token store for refreshed tokens first
+                        stored_token_data = None
+                        for (
+                            session_id,
+                            token_data,
+                        ) in HostedUIProvider.get_all_sessions().items():
+                            # Match by discovery URL and client ID
+                            if (
+                                token_data.discovery_url == oauth_config.discoveryUrl
+                                and token_data.client_id == oauth_config.allowedAudience
+                            ):
+                                stored_token_data = token_data
+                                print(
+                                    f"🔄 Found stored tokens for {payload.name} (session: {session_id})"
+                                )
+                                break
+
+                        if stored_token_data:
+                            # Use stored token based on token type
+                            if oauth_config.tokenType == "id_token":
+                                token = stored_token_data.id_token
+                                time_until_expiry = (
+                                    stored_token_data.time_until_id_token_expiry()
+                                )
+                                print(
+                                    f"✅ Using stored ID token (expires in {time_until_expiry / 60:.1f} min)"
+                                )
+                            else:
+                                token = stored_token_data.access_token
+                                time_until_expiry = (
+                                    stored_token_data.time_until_access_token_expiry()
+                                )
+                                print(
+                                    f"✅ Using stored access token (expires in {time_until_expiry / 60:.1f} min)"
+                                )
+                        else:
+                            # No stored token - obtain fresh token from Cognito
+                            print(
+                                "⚠️  No stored tokens found, obtaining fresh token from Cognito"
+                            )
+                            token = TokenProvider.get_token(
+                                discovery_url=oauth_config.discoveryUrl,
+                                client_id=oauth_config.allowedAudience,
+                            )
+
                         if not token:
-                            print(f"⚠️  Could not obtain token automatically")
+                            print("⚠️  Could not obtain token automatically")
                             raise HTTPException(
                                 status_code=401,
-                                detail=f"Failed to obtain OAuth token from Cognito. Ensure COGNITO_USERNAME and COGNITO_PASSWORD environment variables are set."
+                                detail="Failed to obtain OAuth token from Cognito. Ensure COGNITO_USERNAME and COGNITO_PASSWORD environment variables are set.",
                             )
-                        
+
                         # Add the token to headers for the MCP connection
                         if not headers:
                             headers = {}
                         headers["Authorization"] = f"Bearer {token}"
                         mcp_connection.headers = headers
-                    
+
                     # Skip validation - use token directly
-                    print(f"✅ Token obtained, using directly without validation")
-                
+                    print("✅ Token obtained, using directly without validation")
+
                 transport = await exit_stack.enter_async_context(
                     streamablehttp_client(
                         url=mcp_connection.url,
@@ -1584,81 +1752,83 @@ async def disconnect_mcp(
 async def mcp_oauth_authorize(
     discovery_url: str = Query(...),
     client_id: str = Query(...),
-    redirect_uri: str = Query(default="http://localhost:8000/mcp/oauth/callback")
+    redirect_uri: str = Query(default="http://localhost:8000/mcp/oauth/callback"),
 ):
     """
     Initiate OAuth Hosted UI flow for MCP authentication.
     Returns the authorization URL for the user to visit.
     """
     from chainlit.oauth_hosted_ui import HostedUIProvider
-    
+
     try:
         auth_url, state = HostedUIProvider.get_authorization_url(
-            discovery_url=discovery_url,
-            client_id=client_id,
-            redirect_uri=redirect_uri
+            discovery_url=discovery_url, client_id=client_id, redirect_uri=redirect_uri
         )
-        
-        return JSONResponse(content={
-            "authorization_url": auth_url,
-            "state": state
-        })
+
+        return JSONResponse(content={"authorization_url": auth_url, "state": state})
     except Exception as e:
         raise HTTPException(
-            status_code=400,
-            detail=f"Failed to generate authorization URL: {e!s}"
+            status_code=400, detail=f"Failed to generate authorization URL: {e!s}"
         )
 
 
 @router.get("/mcp/oauth/callback")
-async def mcp_oauth_callback(
-    code: str = Query(...),
-    state: str = Query(...)
-):
+async def mcp_oauth_callback(code: str = Query(...), state: str = Query(...)):
     """
     Handle OAuth callback and exchange authorization code for tokens.
     Cognito redirects here with 'code' and 'state' parameters.
     We retrieve discovery_url and client_id from the stored state.
     """
-    from chainlit.oauth_hosted_ui import HostedUIProvider
     import os
-    
+
+    from chainlit.oauth_hosted_ui import HostedUIProvider
+
     try:
         # Retrieve stored auth state (includes discovery_url and client_id)
         stored_state = HostedUIProvider._auth_states.get(state)
         if not stored_state:
             raise HTTPException(
-                status_code=400,
-                detail="Invalid or expired state parameter"
+                status_code=400, detail="Invalid or expired state parameter"
             )
-        
-        discovery_url = stored_state.get('discovery_url')
-        client_id = stored_state.get('client_id')
-        
+
+        discovery_url = stored_state.get("discovery_url")
+        client_id = stored_state.get("client_id")
+
         if not discovery_url or not client_id:
             raise HTTPException(
                 status_code=400,
-                detail="Missing discovery_url or client_id in stored state"
+                detail="Missing discovery_url or client_id in stored state",
             )
-        
+
         # Get optional client secret
         client_secret = os.getenv("COGNITO_CLIENT_SECRET")
-        
+
         # Exchange code for tokens
         tokens = await HostedUIProvider.exchange_code_for_token(
             discovery_url=discovery_url,
             client_id=client_id,
             authorization_code=code,
             state=state,
-            client_secret=client_secret
+            client_secret=client_secret,
         )
-        
+
         if not tokens:
             raise HTTPException(
                 status_code=401,
-                detail="Failed to exchange authorization code for tokens"
+                detail="Failed to exchange authorization code for tokens",
             )
-        
+
+        # Store tokens for proactive refresh
+        # Generate session_id from state or create a new one
+        session_id = state  # Using state as session_id for simplicity
+        HostedUIProvider.store_tokens(
+            session_id=session_id,
+            tokens=tokens,
+            discovery_url=discovery_url,
+            client_id=client_id,
+            client_secret=client_secret,
+        )
+
         # Return HTML page that closes itself and sends token to parent window
         html_content = f"""
         <!DOCTYPE html>
@@ -1714,14 +1884,11 @@ async def mcp_oauth_callback(
         </body>
         </html>
         """
-        
+
         return HTMLResponse(content=html_content)
-        
+
     except Exception as e:
-        raise HTTPException(
-            status_code=400,
-            detail=f"OAuth callback failed: {e!s}"
-        )
+        raise HTTPException(status_code=400, detail=f"OAuth callback failed: {e!s}")
 
 
 @router.post("/project/file")
