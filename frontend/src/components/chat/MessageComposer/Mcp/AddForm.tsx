@@ -197,6 +197,16 @@ export const McpAddForm = ({
       // Note: If token was obtained from Hosted UI, it's already added above
     }
 
+    // Prepare OAuth config for persistence (if configured)
+    const oauthConfig =
+      discoveryUrl && allowedAudience
+        ? {
+            discoveryUrl,
+            clientId: allowedAudience,
+            tokenType
+          }
+        : undefined;
+
     if (serverType === 'stdio') {
       toast.promise(
         apiClient
@@ -204,7 +214,10 @@ export const McpAddForm = ({
           .then(async (resp: any) => {
             const { success, mcp } = resp;
             if (success && mcp) {
-              setMcps((prev) => [...prev, { ...mcp, status: 'connected' }]);
+              setMcps((prev) => [
+                ...prev,
+                { ...mcp, status: 'connected', oauthConfig }
+              ]);
             }
             resetForm();
             onSuccess();
@@ -223,7 +236,10 @@ export const McpAddForm = ({
           .then(async (resp: any) => {
             const { success, mcp } = resp;
             if (success && mcp) {
-              setMcps((prev) => [...prev, { ...mcp, status: 'connected' }]);
+              setMcps((prev) => [
+                ...prev,
+                { ...mcp, status: 'connected', oauthConfig }
+              ]);
             }
             resetForm();
             onSuccess();
@@ -242,7 +258,10 @@ export const McpAddForm = ({
           .then(async (resp: any) => {
             const { success, mcp } = resp;
             if (success && mcp) {
-              setMcps((prev) => [...prev, { ...mcp, status: 'connected' }]);
+              setMcps((prev) => [
+                ...prev,
+                { ...mcp, status: 'connected', oauthConfig }
+              ]);
             }
             resetForm();
             onSuccess();

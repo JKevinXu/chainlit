@@ -198,8 +198,98 @@ const ReconnectMcpButton = ({ mcp }: { mcp: IMcp }) => {
   const sessionId = useRecoilValue(sessionIdState);
   const [isLoading, setIsLoading] = useState(false);
 
-  const reconnectMcp = () => {
+  const reconnectMcp = async () => {
     setIsLoading(true);
+
+    // Check if this MCP has OAuth configuration
+    const hasOAuth = !!mcp.oauthConfig;
+
+    // If OAuth is configured, trigger re-authentication
+    if (hasOAuth) {
+      try {
+        toast.info('Re-authenticating with OAuth...');
+
+        const { discoveryUrl, clientId, tokenType } = mcp.oauthConfig!;
+
+        // Get authorization URL from backend
+        const params = new URLSearchParams({
+          discovery_url: discoveryUrl,
+          client_id: clientId,
+          redirect_uri: `${window.location.origin}/mcp/oauth/callback`
+        });
+
+        const response = await fetch(`/mcp/oauth/authorize?${params}`);
+        if (!response.ok) {
+          throw new Error('Failed to get authorization URL');
+        }
+
+        const { authorization_url } = await response.json();
+
+        // Open OAuth popup
+        const popup = window.open(
+          authorization_url,
+          'OAuth Re-authentication',
+          'width=500,height=700,left=100,top=100'
+        );
+
+        if (!popup) {
+          toast.error('Popup blocked! Please allow popups for this site.');
+          setIsLoading(false);
+          return;
+        }
+
+        // Wait for OAuth token from popup
+        const token = await new Promise<string>((resolve, reject) => {
+          const messageHandler = (event: MessageEvent) => {
+            if (event.data.type === 'oauth_success') {
+              const tokens = event.data.tokens;
+              const token =
+                tokenType === 'id_token' ? tokens.id_token : tokens.access_token;
+              window.removeEventListener('message', messageHandler);
+              resolve(token);
+            } else if (event.data.type === 'oauth_error') {
+              window.removeEventListener('message', messageHandler);
+              reject(new Error(event.data.error || 'Authentication failed'));
+            }
+          };
+
+          window.addEventListener('message', messageHandler);
+
+          // Check if popup was closed without completing auth
+          const checkPopup = setInterval(() => {
+            if (popup.closed) {
+              clearInterval(checkPopup);
+              window.removeEventListener('message', messageHandler);
+              reject(new Error('Login window was closed'));
+            }
+          }, 1000);
+        });
+
+        // Update MCP with fresh token
+        const headers = (mcp as any).headers || {};
+        headers['Authorization'] = `Bearer ${token}`;
+
+        // Update stored MCP with new headers (preserve OAuth config)
+        setMcps((prev) =>
+          prev.map((existingMcp) => {
+            if (existingMcp.name === mcp.name) {
+              return {
+                ...existingMcp,
+                headers: headers,
+                oauthConfig: mcp.oauthConfig // Preserve OAuth config
+              };
+            }
+            return existingMcp;
+          })
+        );
+
+        toast.success('Re-authentication successful!');
+      } catch (error: any) {
+        toast.error(`Re-authentication failed: ${error.message}`);
+        setIsLoading(false);
+        return;
+      }
+    }
 
     setMcps((prev) =>
       prev.map((existingMcp) => {
