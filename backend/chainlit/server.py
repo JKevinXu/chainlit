@@ -1427,10 +1427,7 @@ async def connect_mcp(
                         allowedAudience=headers.pop("X-OAuth-Allowed-Audience"),
                         tokenType=headers.pop("X-OAuth-Token-Type", "access_token"),
                     )
-                    print(f"🔐 OAuth configuration detected for {payload.name}")
-                    print(f"   Discovery URL: {oauth_config.discoveryUrl}")
-                    print(f"   Audience: {oauth_config.allowedAudience}")
-                    print(f"   Token Type: {oauth_config.tokenType}")
+                    print(f"🔐 OAuth enabled for {payload.name} (token: {oauth_config.tokenType})")
 
                 mcp_connection = SseMcpConnection(
                     url=payload.url,
@@ -1446,41 +1443,19 @@ async def connect_mcp(
 
                     token = None
 
-                    # ALWAYS check token store first for refreshed tokens
-                    stored_token_data = None
-                    for (
-                        session_id,
-                        token_data,
-                    ) in HostedUIProvider.get_all_sessions().items():
-                        # Match by discovery URL and client ID
-                        if (
-                            token_data.discovery_url == oauth_config.discoveryUrl
-                            and token_data.client_id == oauth_config.allowedAudience
-                        ):
-                            stored_token_data = token_data
-                            print(
-                                f"🔄 Found stored tokens for {payload.name} (session: {session_id})"
-                            )
-                            break
+                    # ALWAYS check token store first for refreshed tokens (PRIORITY 1)
+                    result = HostedUIProvider.get_token_for_mcp(
+                        discovery_url=oauth_config.discoveryUrl,
+                        client_id=oauth_config.allowedAudience,
+                        token_type=oauth_config.tokenType,
+                    )
 
-                    if stored_token_data:
-                        # Use stored token based on token type (PRIORITY 1)
-                        if oauth_config.tokenType == "id_token":
-                            token = stored_token_data.id_token
-                            time_until_expiry = (
-                                stored_token_data.time_until_id_token_expiry()
-                            )
-                            print(
-                                f"✅ Using stored ID token (expires in {time_until_expiry / 60:.1f} min)"
-                            )
-                        else:
-                            token = stored_token_data.access_token
-                            time_until_expiry = (
-                                stored_token_data.time_until_access_token_expiry()
-                            )
-                            print(
-                                f"✅ Using stored access token (expires in {time_until_expiry / 60:.1f} min)"
-                            )
+                    if result:
+                        token, time_until_expiry = result
+                        token_name = "ID token" if oauth_config.tokenType == "id_token" else "access token"
+                        print(
+                            f"✅ Using stored {token_name} for {payload.name} (expires in {time_until_expiry / 60:.1f} min)"
+                        )
                     elif headers and "Authorization" in headers:
                         # Fall back to provided token if no stored token (PRIORITY 2)
                         auth_header = headers["Authorization"]
@@ -1511,7 +1486,6 @@ async def connect_mcp(
                         mcp_connection.headers = headers
 
                     # Skip validation - use token directly
-                    print("✅ Token obtained, using directly without validation")
 
                 transport = await exit_stack.enter_async_context(
                     sse_client(
@@ -1564,10 +1538,7 @@ async def connect_mcp(
                         allowedAudience=headers.pop("X-OAuth-Allowed-Audience"),
                         tokenType=headers.pop("X-OAuth-Token-Type", "access_token"),
                     )
-                    print(f"🔐 OAuth configuration detected for {payload.name}")
-                    print(f"   Discovery URL: {oauth_config.discoveryUrl}")
-                    print(f"   Audience: {oauth_config.allowedAudience}")
-                    print(f"   Token Type: {oauth_config.tokenType}")
+                    print(f"🔐 OAuth enabled for {payload.name} (token: {oauth_config.tokenType})")
 
                 mcp_connection = HttpMcpConnection(
                     url=payload.url,
@@ -1583,41 +1554,19 @@ async def connect_mcp(
 
                     token = None
 
-                    # ALWAYS check token store first for refreshed tokens
-                    stored_token_data = None
-                    for (
-                        session_id,
-                        token_data,
-                    ) in HostedUIProvider.get_all_sessions().items():
-                        # Match by discovery URL and client ID
-                        if (
-                            token_data.discovery_url == oauth_config.discoveryUrl
-                            and token_data.client_id == oauth_config.allowedAudience
-                        ):
-                            stored_token_data = token_data
-                            print(
-                                f"🔄 Found stored tokens for {payload.name} (session: {session_id})"
-                            )
-                            break
+                    # ALWAYS check token store first for refreshed tokens (PRIORITY 1)
+                    result = HostedUIProvider.get_token_for_mcp(
+                        discovery_url=oauth_config.discoveryUrl,
+                        client_id=oauth_config.allowedAudience,
+                        token_type=oauth_config.tokenType,
+                    )
 
-                    if stored_token_data:
-                        # Use stored token based on token type (PRIORITY 1)
-                        if oauth_config.tokenType == "id_token":
-                            token = stored_token_data.id_token
-                            time_until_expiry = (
-                                stored_token_data.time_until_id_token_expiry()
-                            )
-                            print(
-                                f"✅ Using stored ID token (expires in {time_until_expiry / 60:.1f} min)"
-                            )
-                        else:
-                            token = stored_token_data.access_token
-                            time_until_expiry = (
-                                stored_token_data.time_until_access_token_expiry()
-                            )
-                            print(
-                                f"✅ Using stored access token (expires in {time_until_expiry / 60:.1f} min)"
-                            )
+                    if result:
+                        token, time_until_expiry = result
+                        token_name = "ID token" if oauth_config.tokenType == "id_token" else "access token"
+                        print(
+                            f"✅ Using stored {token_name} for {payload.name} (expires in {time_until_expiry / 60:.1f} min)"
+                        )
                     elif headers and "Authorization" in headers:
                         # Fall back to provided token if no stored token (PRIORITY 2)
                         auth_header = headers["Authorization"]
@@ -1648,7 +1597,6 @@ async def connect_mcp(
                         mcp_connection.headers = headers
 
                     # Skip validation - use token directly
-                    print("✅ Token obtained, using directly without validation")
 
                 transport = await exit_stack.enter_async_context(
                     streamablehttp_client(

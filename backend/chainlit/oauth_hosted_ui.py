@@ -9,7 +9,7 @@ import json
 import os
 import secrets
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Dict, Optional
 from urllib.parse import urlencode, urlparse
 
@@ -25,12 +25,10 @@ class TokenData:
     refresh_token: Optional[str] = None
     id_token_expires_at: float = 0.0  # Unix timestamp
     access_token_expires_at: float = 0.0  # Unix timestamp
-    refresh_token_expires_at: float = 0.0  # Unix timestamp
     discovery_url: str = ""
     client_id: str = ""
     client_secret: Optional[str] = None
     session_id: str = ""
-    last_refresh_at: float = field(default_factory=time.time)
 
     def time_until_id_token_expiry(self) -> float:
         """Returns seconds until ID token expires"""
@@ -40,18 +38,20 @@ class TokenData:
         """Returns seconds until access token expires"""
         return max(0.0, self.access_token_expires_at - time.time())
 
-    def needs_refresh(self, threshold_seconds: int = 3540) -> bool:
+    def needs_refresh(self) -> bool:
         """
         Check if token needs refresh.
 
-        Args:
-            threshold_seconds: Refresh when this many seconds before expiry (default: 3540 = 59 min for testing, 600 = 10 min for prod)
+        Uses OAUTH_REFRESH_THRESHOLD_SECONDS environment variable if set,
+        otherwise defaults to 600 seconds (10 minutes).
 
         Returns:
             True if token should be refreshed
         """
+        # Get refresh threshold from environment, default to 10 minutes
+        threshold = int(os.environ.get("OAUTH_REFRESH_THRESHOLD_SECONDS", "600"))
         time_until_expiry = self.time_until_id_token_expiry()
-        return 0 < time_until_expiry < threshold_seconds
+        return 0 < time_until_expiry < threshold
 
 
 def decode_jwt_without_validation(token: str) -> Optional[Dict[str, Any]]:
@@ -309,10 +309,8 @@ class HostedUIProvider:
                 print("✅ Successfully obtained tokens from Hosted UI")
                 if "id_token" in tokens:
                     print(f"   ID token: {tokens['id_token'][:50]}...")
-                    print(f"   📋 Full ID token: {tokens['id_token']}")
                 if "access_token" in tokens:
                     print(f"   Access token: {tokens['access_token'][:50]}...")
-                    print(f"   📋 Full access token: {tokens['access_token']}")
                 if "refresh_token" in tokens:
                     print(f"   Refresh token: {tokens['refresh_token'][:50]}...")
                 else:
@@ -413,20 +411,10 @@ class HostedUIProvider:
                 print("✅ Successfully refreshed tokens")
                 if "id_token" in tokens:
                     print(f"   New ID token: {tokens['id_token'][:50]}... ✨ (NEW!)")
-                    print(f"   📋 Full ID token: {tokens['id_token']}")
                 else:
                     print(f"   ⚠️  No new ID token returned (IDP may not support this)")
                 if "access_token" in tokens:
                     print(f"   New access token: {tokens['access_token'][:50]}...")
-                    print(f"   📋 Full access token: {tokens['access_token']}")
-                    # Check if access token contains user identity
-                    access_payload = decode_jwt_without_validation(tokens['access_token'])
-                    if access_payload:
-                        identity_claims = {k: v for k, v in access_payload.items() if k in ['sub', 'email', 'name', 'username', 'preferred_username']}
-                        if identity_claims:
-                            print(f"   ✅ Access token contains user identity: {list(identity_claims.keys())}")
-                        else:
-                            print(f"   ℹ️  Access token claims: {list(access_payload.keys())[:5]}...")
                 if "refresh_token" in tokens:
                     print(f"   New refresh token: {tokens['refresh_token'][:50]}...")
 
@@ -481,7 +469,6 @@ class HostedUIProvider:
                     )
             elif existing_token_data:
                 print(f"♻️  Preserving existing ID token (expires at: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(id_token_expires_at))})")
-                print(f"   📋 Preserved ID token: {id_token}")
 
             # Update access token expiry if we have a new access token
             if tokens.get("access_token"):
@@ -523,7 +510,6 @@ class HostedUIProvider:
                 "client_id": token_data.client_id,
                 "client_secret": token_data.client_secret,
                 "session_id": token_data.session_id,
-                "last_refresh_at": token_data.last_refresh_at,
             }
             
             # Save asynchronously
@@ -583,6 +569,38 @@ class HostedUIProvider:
         return cls._token_store.copy()
 
     @classmethod
+    def get_token_for_mcp(
+        cls, discovery_url: str, client_id: str, token_type: str = "access_token"
+    ) -> Optional[tuple[str, float]]:
+        """
+        Get OAuth token from store matching MCP OAuth configuration.
+
+        Args:
+            discovery_url: OIDC discovery URL
+            client_id: OAuth client ID
+            token_type: Type of token to return ('access_token' or 'id_token')
+
+        Returns:
+            Tuple of (token, time_until_expiry_seconds) or None if not found
+        """
+        for session_id, token_data in cls._token_store.items():
+            if (
+                token_data.discovery_url == discovery_url
+                and token_data.client_id == client_id
+            ):
+                if token_type == "id_token":
+                    return (
+                        token_data.id_token,
+                        token_data.time_until_id_token_expiry(),
+                    )
+                else:
+                    return (
+                        token_data.access_token,
+                        token_data.time_until_access_token_expiry(),
+                    )
+        return None
+
+    @classmethod
     async def restore_tokens_from_storage(cls) -> int:
         """
         Restore persisted OAuth tokens from disk on startup.
@@ -612,7 +630,6 @@ class HostedUIProvider:
                         client_id=token_dict.get("client_id", ""),
                         client_secret=token_dict.get("client_secret"),
                         session_id=token_dict.get("session_id", session_id),
-                        last_refresh_at=token_dict.get("last_refresh_at", time.time()),
                     )
 
                     # Store in memory
