@@ -1446,57 +1446,56 @@ async def connect_mcp(
 
                     token = None
 
-                    # Check if Authorization header is already provided
-                    if headers and "Authorization" in headers:
+                    # ALWAYS check token store first for refreshed tokens
+                    stored_token_data = None
+                    for (
+                        session_id,
+                        token_data,
+                    ) in HostedUIProvider.get_all_sessions().items():
+                        # Match by discovery URL and client ID
+                        if (
+                            token_data.discovery_url == oauth_config.discoveryUrl
+                            and token_data.client_id == oauth_config.allowedAudience
+                        ):
+                            stored_token_data = token_data
+                            print(
+                                f"🔄 Found stored tokens for {payload.name} (session: {session_id})"
+                            )
+                            break
+
+                    if stored_token_data:
+                        # Use stored token based on token type (PRIORITY 1)
+                        if oauth_config.tokenType == "id_token":
+                            token = stored_token_data.id_token
+                            time_until_expiry = (
+                                stored_token_data.time_until_id_token_expiry()
+                            )
+                            print(
+                                f"✅ Using stored ID token (expires in {time_until_expiry / 60:.1f} min)"
+                            )
+                        else:
+                            token = stored_token_data.access_token
+                            time_until_expiry = (
+                                stored_token_data.time_until_access_token_expiry()
+                            )
+                            print(
+                                f"✅ Using stored access token (expires in {time_until_expiry / 60:.1f} min)"
+                            )
+                    elif headers and "Authorization" in headers:
+                        # Fall back to provided token if no stored token (PRIORITY 2)
                         auth_header = headers["Authorization"]
                         if auth_header.startswith("Bearer "):
                             token = auth_header.replace("Bearer ", "")
                             print(f"🔑 Using provided token for {payload.name}")
                     else:
-                        # Check token store for refreshed tokens first
-                        stored_token_data = None
-                        for (
-                            session_id,
-                            token_data,
-                        ) in HostedUIProvider.get_all_sessions().items():
-                            # Match by discovery URL and client ID
-                            if (
-                                token_data.discovery_url == oauth_config.discoveryUrl
-                                and token_data.client_id == oauth_config.allowedAudience
-                            ):
-                                stored_token_data = token_data
-                                print(
-                                    f"🔄 Found stored tokens for {payload.name} (session: {session_id})"
-                                )
-                                break
-
-                        if stored_token_data:
-                            # Use stored token based on token type
-                            if oauth_config.tokenType == "id_token":
-                                token = stored_token_data.id_token
-                                time_until_expiry = (
-                                    stored_token_data.time_until_id_token_expiry()
-                                )
-                                print(
-                                    f"✅ Using stored ID token (expires in {time_until_expiry / 60:.1f} min)"
-                                )
-                            else:
-                                token = stored_token_data.access_token
-                                time_until_expiry = (
-                                    stored_token_data.time_until_access_token_expiry()
-                                )
-                                print(
-                                    f"✅ Using stored access token (expires in {time_until_expiry / 60:.1f} min)"
-                                )
-                        else:
-                            # No stored token - obtain fresh token from Cognito
-                            print(
-                                "⚠️  No stored tokens found, obtaining fresh token from Cognito"
-                            )
-                            token = TokenProvider.get_token(
-                                discovery_url=oauth_config.discoveryUrl,
-                                client_id=oauth_config.allowedAudience,
-                            )
+                        # Last resort: obtain fresh token from Cognito (PRIORITY 3)
+                        print(
+                            "⚠️  No stored or provided tokens, obtaining fresh token from Cognito"
+                        )
+                        token = TokenProvider.get_token(
+                            discovery_url=oauth_config.discoveryUrl,
+                            client_id=oauth_config.allowedAudience,
+                        )
 
                         if not token:
                             print("⚠️  Could not obtain token automatically")
@@ -1584,57 +1583,56 @@ async def connect_mcp(
 
                     token = None
 
-                    # Check if Authorization header is already provided
-                    if headers and "Authorization" in headers:
+                    # ALWAYS check token store first for refreshed tokens
+                    stored_token_data = None
+                    for (
+                        session_id,
+                        token_data,
+                    ) in HostedUIProvider.get_all_sessions().items():
+                        # Match by discovery URL and client ID
+                        if (
+                            token_data.discovery_url == oauth_config.discoveryUrl
+                            and token_data.client_id == oauth_config.allowedAudience
+                        ):
+                            stored_token_data = token_data
+                            print(
+                                f"🔄 Found stored tokens for {payload.name} (session: {session_id})"
+                            )
+                            break
+
+                    if stored_token_data:
+                        # Use stored token based on token type (PRIORITY 1)
+                        if oauth_config.tokenType == "id_token":
+                            token = stored_token_data.id_token
+                            time_until_expiry = (
+                                stored_token_data.time_until_id_token_expiry()
+                            )
+                            print(
+                                f"✅ Using stored ID token (expires in {time_until_expiry / 60:.1f} min)"
+                            )
+                        else:
+                            token = stored_token_data.access_token
+                            time_until_expiry = (
+                                stored_token_data.time_until_access_token_expiry()
+                            )
+                            print(
+                                f"✅ Using stored access token (expires in {time_until_expiry / 60:.1f} min)"
+                            )
+                    elif headers and "Authorization" in headers:
+                        # Fall back to provided token if no stored token (PRIORITY 2)
                         auth_header = headers["Authorization"]
                         if auth_header.startswith("Bearer "):
                             token = auth_header.replace("Bearer ", "")
                             print(f"🔑 Using provided token for {payload.name}")
                     else:
-                        # Check token store for refreshed tokens first
-                        stored_token_data = None
-                        for (
-                            session_id,
-                            token_data,
-                        ) in HostedUIProvider.get_all_sessions().items():
-                            # Match by discovery URL and client ID
-                            if (
-                                token_data.discovery_url == oauth_config.discoveryUrl
-                                and token_data.client_id == oauth_config.allowedAudience
-                            ):
-                                stored_token_data = token_data
-                                print(
-                                    f"🔄 Found stored tokens for {payload.name} (session: {session_id})"
-                                )
-                                break
-
-                        if stored_token_data:
-                            # Use stored token based on token type
-                            if oauth_config.tokenType == "id_token":
-                                token = stored_token_data.id_token
-                                time_until_expiry = (
-                                    stored_token_data.time_until_id_token_expiry()
-                                )
-                                print(
-                                    f"✅ Using stored ID token (expires in {time_until_expiry / 60:.1f} min)"
-                                )
-                            else:
-                                token = stored_token_data.access_token
-                                time_until_expiry = (
-                                    stored_token_data.time_until_access_token_expiry()
-                                )
-                                print(
-                                    f"✅ Using stored access token (expires in {time_until_expiry / 60:.1f} min)"
-                                )
-                        else:
-                            # No stored token - obtain fresh token from Cognito
-                            print(
-                                "⚠️  No stored tokens found, obtaining fresh token from Cognito"
-                            )
-                            token = TokenProvider.get_token(
-                                discovery_url=oauth_config.discoveryUrl,
-                                client_id=oauth_config.allowedAudience,
-                            )
+                        # Last resort: obtain fresh token from Cognito (PRIORITY 3)
+                        print(
+                            "⚠️  No stored or provided tokens, obtaining fresh token from Cognito"
+                        )
+                        token = TokenProvider.get_token(
+                            discovery_url=oauth_config.discoveryUrl,
+                            client_id=oauth_config.allowedAudience,
+                        )
 
                         if not token:
                             print("⚠️  Could not obtain token automatically")

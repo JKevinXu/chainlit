@@ -209,7 +209,7 @@ class TokenPersistence:
         Returns:
             Dictionary mapping session_id to token data
         """
-        tokens = {}
+        tokens: Dict[str, dict] = {}
 
         try:
             storage_dir = cls._get_storage_dir()
