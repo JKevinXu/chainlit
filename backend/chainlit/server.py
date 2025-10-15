@@ -233,6 +233,15 @@ async def lifespan(app: FastAPI):
                 # Continue monitoring despite errors
                 await asyncio.sleep(60)
 
+    # Restore persisted OAuth tokens from disk before starting monitor
+    from chainlit.oauth_hosted_ui import HostedUIProvider
+
+    logger.info("📂 Restoring OAuth tokens from storage...")
+    restored_count = await HostedUIProvider.restore_tokens_from_storage()
+
+    if restored_count > 0:
+        logger.info(f"✅ Restored {restored_count} OAuth session(s) - refresh monitoring will resume")
+    
     refresh_task = asyncio.create_task(token_refresh_monitor())
 
     try:

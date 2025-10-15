@@ -505,8 +505,29 @@ class HostedUIProvider:
                 session_id=session_id,
             )
 
-            # Store in token store
+            # Store in token store (in-memory)
             cls._token_store[session_id] = token_data
+
+            # Persist to disk for survival across restarts
+            import asyncio
+            from chainlit.oauth_token_store import TokenPersistence
+            
+            # Convert TokenData to dict for serialization
+            token_dict = {
+                "id_token": token_data.id_token,
+                "access_token": token_data.access_token,
+                "refresh_token": token_data.refresh_token,
+                "id_token_expires_at": token_data.id_token_expires_at,
+                "access_token_expires_at": token_data.access_token_expires_at,
+                "discovery_url": token_data.discovery_url,
+                "client_id": token_data.client_id,
+                "client_secret": token_data.client_secret,
+                "session_id": token_data.session_id,
+                "last_refresh_at": token_data.last_refresh_at,
+            }
+            
+            # Save asynchronously
+            asyncio.create_task(TokenPersistence.save_tokens(session_id, token_dict))
 
             # Log refresh status
             time_until_expiry = token_data.time_until_id_token_expiry()
@@ -536,14 +557,20 @@ class HostedUIProvider:
     @classmethod
     def remove_stored_tokens(cls, session_id: str) -> None:
         """
-        Remove stored tokens for a session.
+        Remove stored tokens for a session (both memory and disk).
 
         Args:
             session_id: Unique session identifier
         """
         if session_id in cls._token_store:
             del cls._token_store[session_id]
-            print(f"🗑️  Removed tokens for session: {session_id}")
+            print(f"🗑️  Removed tokens from memory for session: {session_id}")
+
+        # Also delete from disk
+        import asyncio
+        from chainlit.oauth_token_store import TokenPersistence
+
+        asyncio.create_task(TokenPersistence.delete_tokens(session_id))
 
     @classmethod
     def get_all_sessions(cls) -> Dict[str, TokenData]:
@@ -554,3 +581,63 @@ class HostedUIProvider:
             Dictionary of session_id to TokenData
         """
         return cls._token_store.copy()
+
+    @classmethod
+    async def restore_tokens_from_storage(cls) -> int:
+        """
+        Restore persisted OAuth tokens from disk on startup.
+
+        Returns:
+            Number of token sessions restored
+        """
+        try:
+            from chainlit.oauth_token_store import TokenPersistence
+
+            # Load all persisted tokens
+            persisted_tokens = await TokenPersistence.load_all_tokens()
+
+            # Convert dict data back to TokenData objects
+            restored_count = 0
+            for session_id, token_dict in persisted_tokens.items():
+                try:
+                    token_data = TokenData(
+                        id_token=token_dict.get("id_token", ""),
+                        access_token=token_dict.get("access_token", ""),
+                        refresh_token=token_dict.get("refresh_token"),
+                        id_token_expires_at=token_dict.get("id_token_expires_at", 0.0),
+                        access_token_expires_at=token_dict.get(
+                            "access_token_expires_at", 0.0
+                        ),
+                        discovery_url=token_dict.get("discovery_url", ""),
+                        client_id=token_dict.get("client_id", ""),
+                        client_secret=token_dict.get("client_secret"),
+                        session_id=token_dict.get("session_id", session_id),
+                        last_refresh_at=token_dict.get("last_refresh_at", time.time()),
+                    )
+
+                    # Store in memory
+                    cls._token_store[session_id] = token_data
+                    restored_count += 1
+
+                    # Log token status
+                    time_until_expiry = token_data.time_until_id_token_expiry()
+                    print(
+                        f"   ↪️  Session {session_id[:8]}... (expires in {time_until_expiry / 60:.1f} min)"
+                    )
+
+                except Exception as e:
+                    print(
+                        f"⚠️  Failed to restore session {session_id[:8]}...: {e}"
+                    )
+                    continue
+
+            if restored_count > 0:
+                print(f"✅ Restored {restored_count} OAuth token session(s) from storage")
+            else:
+                print("📭 No persisted OAuth tokens found")
+
+            return restored_count
+
+        except Exception as e:
+            print(f"❌ Failed to restore tokens from storage: {e}")
+            return 0
